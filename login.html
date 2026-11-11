@@ -1,0 +1,93 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NetTwin AI | Account</title>
+    <link rel="stylesheet"
+          href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="auth-body">
+
+    <div class="auth-container">
+
+        <div class="auth-brand">
+            <div class="auth-logo">⬡</div>
+            <h1>NetTwin <span>AI</span></h1>
+            <p class="auth-tagline">TEST BEFORE YOU CONNECT</p>
+
+            <div class="auth-brand-message">
+                <h2>Build smarter.<br>Test safer.</h2>
+                <p>
+                    Create virtual networks, simulate failures
+                    and understand possible risks before they
+                    affect your business.
+                </p>
+            </div>
+        </div>
+
+        <div class="auth-form-panel">
+
+            <div class="auth-card">
+
+                {% if mode == "signup" %}
+                    <p class="eyebrow">GET STARTED</p>
+                    <h2>Create your account</h2>
+                    <p class="muted">Start your NetTwin AI journey.</p>
+                {% else %}
+                    <p class="eyebrow">WELCOME BACK</p>
+                    <h2>Sign in to NetTwin AI</h2>
+                    <p class="muted">Access your network dashboard.</p>
+                {% endif %}
+
+                {% with messages = get_flashed_messages() %}
+                    {% for message in messages %}
+                        <p class="form-error">{{ message }}</p>
+                    {% endfor %}
+                {% endwith %}
+
+                <form method="POST">
+
+                    {% if mode == "signup" %}
+                        <label>Full Name</label>
+                        <input type="text" name="name"
+                               placeholder="Your name" required>
+                    {% endif %}
+
+                    <label>Email Address</label>
+                    <input type="email" name="email"
+                           placeholder="name@example.com" required>
+
+                    <label>Password</label>
+                    <input type="password" name="password"
+                           placeholder="At least 8 characters"
+                           minlength="8" required>
+
+                    <button type="submit" class="primary-btn">
+                        {{ "Create Account" if mode == "signup" else "Sign In" }}
+                    </button>
+
+                </form>
+
+                <p class="auth-switch">
+                    {% if mode == "signup" %}
+                        Already have an account?
+                        <a href="{{ url_for('login') }}">Sign In</a>
+                    {% else %}
+                        Don't have an account?
+                        <a href="{{ url_for('signup') }}">Create Account</a>
+                    {% endif %}
+                </p>
+
+                <p class="auth-note">
+                    Student startup prototype — use a demo password.
+                </p>
+
+            </div>
+        </div>
+
+    </div>
+
+</body>
+</html>
