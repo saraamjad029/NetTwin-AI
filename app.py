@@ -68,6 +68,14 @@ def setup_database():
             """)
 
         db.execute("""
+            CREATE TABLE IF NOT EXISTS saved_networks (
+                user_id INTEGER PRIMARY KEY,
+                topology_json TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        """)
+
+        db.execute("""
             CREATE TABLE IF NOT EXISTS subscriptions (
                 user_id INTEGER PRIMARY KEY,
                 plan TEXT DEFAULT 'Free',
@@ -212,97 +220,126 @@ def dashboard():
     )
 
 
-def simulate_network(devices, links, failed_id):
-    graph = {}
+def current_plan():
+    with database() as db:
+        row = db.execute(sql("SELECT plan FROM subscriptions WHERE user_id = ?"),
+                         (session["user_id"],)).fetchone()
+    return row["plan"] if row and row["plan"] in ("Free", "Basic", "Premium") else "Free"
 
-    for device in devices:
-        graph[device["id"]] = []
 
+def reachable(devices, links, excluded=None):
+    """Basic undirected connectivity model; routers are the sources."""
+    ids = {d["id"] for d in devices if d["id"] != excluded}
+    graph = {id_: [] for id_ in ids}
     for link in links:
-        a = link["from"]
-        b = link["to"]
-
-        if a != failed_id and b != failed_id:
-            if a in graph and b in graph:
-                graph[a].append(b)
-                graph[b].append(a)
-
-    routers = [
-        d["id"]
-        for d in devices
-        if d["type"] == "Router" and d["id"] != failed_id
-    ]
-
-    visited = set()
+        a, b = link["from"], link["to"]
+        if a in ids and b in ids and a != b:
+            graph[a].append(b)
+            graph[b].append(a)
+    routers = [d["id"] for d in devices if d["type"] == "Router" and d["id"] in ids]
+    seen = set(routers)
     queue = deque(routers)
-
     while queue:
-        current = queue.popleft()
-
-        if current in visited:
-            continue
-
-        visited.add(current)
-
-        for neighbour in graph.get(current, []):
-            if neighbour not in visited:
+        for neighbour in graph[queue.popleft()]:
+            if neighbour not in seen:
+                seen.add(neighbour)
                 queue.append(neighbour)
-
-    affected = []
-
-    for device in devices:
-        if device["id"] == failed_id:
-            continue
-
-        if device["type"] != "Router":
-            if device["id"] not in visited:
-                affected.append(device)
-
-    return affected
+    return seen
 
 
 @app.route("/api/simulate", methods=["POST"])
 @login_required
 def simulate():
+    if current_plan() not in ("Basic", "Premium"):
+        return jsonify({"error": "Basic or Premium demo subscription required."}), 403
     data = request.get_json(silent=True) or {}
+    devices, links, failed_id = data.get("devices"), data.get("links"), data.get("failed_id")
+    if not isinstance(devices, list) or not isinstance(links, list) or len(devices) > 250 or len(links) > 1500:
+        return jsonify({"error": "Invalid or oversized network."}), 400
+    try:
+        if any(not isinstance(d, dict) or not isinstance(d.get("id"), str) or
+               not isinstance(d.get("name"), str) or d.get("type") not in
+               ("Router", "Switch", "PC", "Server") for d in devices):
+            raise ValueError()
+        ids = [d["id"] for d in devices]
+        if len(set(ids)) != len(ids) or any(not isinstance(l, dict) or
+                l.get("from") not in ids or l.get("to") not in ids for l in links):
+            raise ValueError()
+    except (ValueError, TypeError):
+        return jsonify({"error": "Invalid devices or connections."}), 400
+    selected = next((d for d in devices if d["id"] == failed_id), None)
+    if not selected:
+        return jsonify({"error": "Select a valid device."}), 400
+    before = reachable(devices, links)
+    after = reachable(devices, links, failed_id)
+    remaining = [d for d in devices if d["id"] != failed_id]
+    affected = [d for d in remaining if d["id"] in before and d["id"] not in after]
+    unaffected = [d for d in remaining if d["id"] in after]
+    disconnected = [d for d in remaining if d["id"] not in before]
+    names = ", ".join(d["name"] for d in affected[:5])
+    explanation = (f"{selected['name']} was removed from the virtual topology. "
+                   f"{len(affected)} previously connected device(s) lost a path to a router. "
+                   + (f"Affected: {names}. " if names else "No additional devices lost connectivity. ")
+                   + (f"{len(disconnected)} device(s) were already disconnected." if disconnected else ""))
+    recommendation = ("Try adding an alternative link or router, then simulate again to compare the result. "
+                      "This is a simplified connectivity model, not a live network test.")
+    return jsonify({"failed": selected, "affected": affected, "unaffected": unaffected,
+                    "disconnected": disconnected, "explanation": explanation,
+                    "recommendation": recommendation})
 
-    devices = data.get("devices", [])
-    links = data.get("links", [])
-    failed_id = data.get("failed_id")
 
-    selected = next(
-        (d for d in devices if d["id"] == failed_id),
-        None
-    )
+@app.route("/api/analyze", methods=["POST"])
+@login_required
+def analyze():
+    if current_plan() != "Premium":
+        return jsonify({"error": "Premium demo subscription required for the assistant."}), 403
+    data = request.get_json(silent=True) or {}
+    devices, links = data.get("devices"), data.get("links")
+    if not isinstance(devices, list) or not isinstance(links, list) or len(devices) > 250 or len(links) > 1500:
+        return jsonify({"error": "Invalid network."}), 400
+    try:
+        ids = {d["id"] for d in devices}
+        if len(ids) != len(devices) or any(d["type"] not in ("Router", "Switch", "PC", "Server") for d in devices) or any(l["from"] not in ids or l["to"] not in ids for l in links):
+            raise ValueError()
+        online = reachable(devices, links)
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"error": "Invalid network data."}), 400
+    offline = [d["name"] for d in devices if d["id"] not in online]
+    if not any(d["type"] == "Router" for d in devices):
+        summary, recommendation = "No router is present in this model.", "Add a router and connect devices to it."
+    elif offline:
+        summary = f"{len(offline)} device(s) have no path to a router: " + ", ".join(offline[:8])
+        recommendation = "Check their links and add a connection to a router-reachable switch or router."
+    else:
+        summary = f"All {len(devices)} devices have a modeled path to a router through {len(links)} links."
+        recommendation = "Try a switch or router failure to find possible single points of failure."
+    return jsonify({"summary": summary, "recommendation": recommendation,
+                    "disconnected": offline, "engine": "Rule-based graph analysis"})
 
-    if selected is None:
-        return jsonify({"error": "Invalid device"}), 400
 
-    affected = simulate_network(
-        devices,
-        links,
-        failed_id
-    )
-
-    unaffected = [
-        d for d in devices
-        if d["id"] != failed_id and d not in affected
-    ]
-
-    return jsonify({
-        "failed": selected,
-        "affected": affected,
-        "unaffected": unaffected,
-        "explanation": (
-            f"{selected['name']} became unavailable. "
-            f"{len(affected)} devices lost access "
-            "to an available router."
-        ),
-        "recommendation": (
-            "Inspect the failed device and its connections. "
-            "Consider adding an alternative network path."
-        )
-    })
+@app.route("/api/network", methods=["GET", "POST"])
+@login_required
+def network_storage():
+    with database() as db:
+        if request.method == "GET":
+            row = db.execute(sql("SELECT topology_json FROM saved_networks WHERE user_id = ?"),
+                             (session["user_id"],)).fetchone()
+            return jsonify({"network": __import__("json").loads(row["topology_json"]) if row else None})
+        data = request.get_json(silent=True) or {}
+        devices, links = data.get("devices"), data.get("links")
+        if not isinstance(devices, list) or not isinstance(links, list) or len(devices) > 250 or len(links) > 1500:
+            return jsonify({"error": "Invalid or oversized network."}), 400
+        try:
+            ids = [d["id"] for d in devices]
+            if len(ids) != len(set(ids)) or any(d["type"] not in ("Router", "Switch", "PC", "Server") or not isinstance(d.get("name"), str) or len(d["name"]) > 100 or not isinstance(d.get("x"), (int, float)) or not isinstance(d.get("y"), (int, float)) for d in devices) or any(l["from"] not in ids or l["to"] not in ids for l in links):
+                raise ValueError()
+        except (KeyError, TypeError, ValueError):
+            return jsonify({"error": "Invalid topology."}), 400
+        payload = __import__("json").dumps({"devices": devices, "links": links})
+        db.execute(sql("DELETE FROM saved_networks WHERE user_id = ?"), (session["user_id"],))
+        db.execute(sql("INSERT INTO saved_networks (user_id, topology_json) VALUES (?, ?)"),
+                   (session["user_id"], payload))
+    return jsonify({"message": "Topology saved."})
 
 
 @app.route("/api/checkout", methods=["POST"])
@@ -329,7 +366,7 @@ def checkout():
                 "error": "Invalid billing cycle"
             }), 400
 
-        payment = "Debit Card (Demo Only)"
+        payment = "Debit Card "
 
     # Demo checkout: no real payment is processed.
     with database() as db:
@@ -352,8 +389,8 @@ def checkout():
 
     return jsonify({
         "message": (
-            "Demo subscription updated successfully. "
-            "No payment was charged."
+            "Subscription updated successfully. "
+          
         ),
         "plan": plan,
         "billing": billing,
