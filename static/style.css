@@ -1249,3 +1249,17 @@ footer span {
     flex-shrink: 0;
 }
 
+
+/* NetTwin AI editable topology upgrade */
+.topology-actions { display:flex; flex-wrap:wrap; gap:8px; margin:0 0 12px; align-items:center; }
+.topology-actions .btn { padding:9px 11px; font-size:11px; }
+#zoom-level { min-width:45px; font-size:12px; color:#c4a6ff; text-align:center; }
+.network-area { height:440px; overflow:auto; margin-top:12px; }
+#topology-canvas { position:relative; min-width:900px; min-height:440px; }
+#topology { width:900px; height:440px; min-width:0; max-width:none; touch-action:none; }
+.network-legend { position:sticky; left:14px; top:12px; width:max-content; pointer-events:none; }
+.network-node { cursor:grab; }
+.network-node:active { cursor:grabbing; }
+.network-node.disconnected circle { fill:#5b5968!important; stroke:#bbb5c7; stroke-dasharray:4 3; }
+.ai-panel { border:2px solid #9160db; box-shadow:0 0 24px #7445c422; }
+@media(max-width:700px){ .network-area {height:350px;} .topology-actions .btn{font-size:10px;} }
