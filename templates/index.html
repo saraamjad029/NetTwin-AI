@@ -9,7 +9,7 @@
           href="{{ url_for('static', filename='style.css') }}">
 </head>
 
-<body class="dashboard-body">
+<body class="dashboard-body" data-plan="{{ subscription.plan }}">
 <div class="app-layout">
 
     <!-- SIDEBAR -->
@@ -174,7 +174,21 @@
                     </button>
                 </div>
 
-                <div class="network-area">
+                <div class="topology-actions">
+                    <button id="rename-device" class="btn btn-outline">Rename selected</button>
+                    <button id="delete-device" class="btn btn-outline">Delete selected</button>
+                    <button id="disconnect-device" class="btn btn-outline">Remove selected links</button>
+                    <button id="disconnect-pair" class="btn btn-outline">Disconnect chosen pair</button>
+                    <button id="undo-device" class="btn btn-outline">Undo</button>
+                    <button id="redo-device" class="btn btn-outline">Redo</button>
+                    <button id="save-network" class="btn btn-primary">Save topology</button>
+                    <button id="zoom-out" class="btn btn-outline">−</button>
+                    <span id="zoom-level">100%</span>
+                    <button id="zoom-in" class="btn btn-outline">+</button>
+                    <button id="zoom-reset" class="btn btn-outline">Reset zoom</button>
+                </div>
+                <p class="muted">Select a device, drag to move it, or use the controls above. Scroll to explore larger topologies.</p>
+                <div class="network-area" id="topology-viewport">
                     <div class="network-legend">
                         <span><i class="router-dot"></i> Router</span>
                         <span><i class="switch-dot"></i> Switch</span>
@@ -182,10 +196,10 @@
                         <span><i class="server-dot"></i> Server</span>
                     </div>
 
-                    <svg id="topology"
+                    <div id="topology-canvas"><svg id="topology"
                          viewBox="0 0 900 440"
                          aria-label="Virtual network topology">
-                    </svg>
+                    </svg></div>
                 </div>
             </section>
 
@@ -233,6 +247,7 @@
                             </div>
                         </div>
 
+                        <div class="result-counts"><div><small>Already Disconnected</small><h3 id="disconnected-count">0</h3></div></div>
                         <div class="result-lists">
                             <div>
                                 <h4 class="affected-title">Affected</h4>
@@ -244,6 +259,7 @@
                             </div>
                         </div>
 
+                        <div class="result-lists"><div><h4>Already Disconnected Before Failure</h4><ul id="disconnected-list"></ul></div></div>
                         <p id="simulation-notice" class="notice"></p>
                     </div>
                 </section>
@@ -273,8 +289,9 @@
                         Analyze Network →
                     </button>
 
+                    <p class="ai-disclaimer">Premium  subscription required for analysis. Results are rule-based, not ML predictions.</p>
                     <p class="ai-disclaimer">
-                        This prototype uses rule-based explanations.
+                        This website uses rule-based explanations.
                         An IT professional stays in control.
                     </p>
                 </section>
@@ -487,16 +504,12 @@
             <span class="payment-icon">▣</span>
             <div>
                 <strong>Debit Card</strong>
-                <small>Demo payment method only.</small>
+                <small> </small>
             </div>
             <span>✓</span>
         </div>
 
-        <p class="demo-warning">
-            Demo checkout only. No real payment will be charged,
-            and no debit card details are collected.
-        </p>
-
+        
         <button id="confirm-checkout"
                 class="btn btn-primary full-width">
             Confirm Subscription
