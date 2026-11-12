@@ -3,6 +3,66 @@ let devices = [];
 let links = [];
 let lastSimulation = null;
 let selectedDevice = null;
+let currentPlan = document.body.dataset.plan || "Free";
+let history = [], future = [];
+let dragging = null;
+let zoom=1;
+const viewport = document.getElementById("topology-viewport");
+function snapshot() { history.push(JSON.stringify({devices, links})); if(history.length > 60) history.shift(); future=[]; }
+function applyHistory(source, destination) {
+    if (!source.length) return;
+    destination.push(JSON.stringify({devices, links}));
+    const state=JSON.parse(source.pop()); devices=state.devices; links=state.links;
+    selectedDevice=null; resetSimulationAfterEdit(); updateDashboard(); drawNetwork();
+}
+function undoEdit(){applyHistory(history,future)}
+function redoEdit(){applyHistory(future,history)}
+function ensurePlan(required) {
+    const level={Free:0,Basic:1,Premium:2};
+    if(level[currentPlan] >= level[required]) return true;
+    alert(required + " demo subscription required. Select a plan in Plans & Billing.");
+    document.getElementById("plans").scrollIntoView({behavior:"smooth"});
+    return false;
+}
+function svgPoint(event) {
+    const point=topology.createSVGPoint(); point.x=event.clientX; point.y=event.clientY;
+    return point.matrixTransform(topology.getScreenCTM().inverse());
+}
+function refreshWorkspace() {
+    const maxX=Math.max(900,...devices.map(d=>d.x+110));
+    const maxY=Math.max(440,...devices.map(d=>d.y+95));
+    topology.setAttribute("viewBox",`0 0 ${maxX} ${maxY}`);
+    topology.style.width=maxX+"px"; topology.style.height=maxY+"px";
+    const canvas=document.getElementById("topology-canvas");
+    if(canvas){canvas.style.width=(maxX*(typeof zoom!=="undefined"?zoom:1))+"px";canvas.style.height=(maxY*(typeof zoom!=="undefined"?zoom:1))+"px";}
+}
+function editSelected() {
+    const device=devices.find(d=>d.id===selectedDevice);
+    if(!device) return alert("Select a device on the diagram first.");
+    const name=prompt("New device name:",device.name);
+    if(name===null) return;
+    if(!name.trim() || name.trim().length>60) return alert("Name must be 1–60 characters.");
+    snapshot(); device.name=name.trim(); resetSimulationAfterEdit(); updateDashboard(); drawNetwork();
+}
+function deleteSelected() {
+    if(!selectedDevice) return alert("Select a device first.");
+    if(!confirm("Delete selected device and its connections?")) return;
+    snapshot(); devices=devices.filter(d=>d.id!==selectedDevice);
+    links=links.filter(l=>l.from!==selectedDevice && l.to!==selectedDevice);
+    selectedDevice=null; resetSimulationAfterEdit(); updateDashboard(); drawNetwork();
+}
+function disconnectSelected() {
+    if(!selectedDevice) return alert("Select a device first.");
+    snapshot(); links=links.filter(l=>l.from!==selectedDevice && l.to!==selectedDevice);
+    resetSimulationAfterEdit(); updateDashboard(); drawNetwork();
+}
+function disconnectPair() {
+    const a=document.getElementById("connect-from").value,b=document.getElementById("connect-to").value;
+    if(!links.some(l=>(l.from===a&&l.to===b)||(l.from===b&&l.to===a))) return alert("No connection exists between those devices.");
+    snapshot(); links=links.filter(l=>!((l.from===a&&l.to===b)||(l.from===b&&l.to===a)));
+    resetSimulationAfterEdit(); updateDashboard(); drawNetwork();
+}
+
 
 const topology = document.getElementById("topology");
 
@@ -17,6 +77,7 @@ const colors = {
 // SAMPLE OFFICE NETWORK
 
 function loadSampleNetwork() {
+    if(devices.length) snapshot();
     devices = [
         { id: "R1", name: "Main Router", type: "Router", x: 450, y: 90 },
         { id: "S1", name: "Switch 1", type: "Switch", x: 275, y: 200 },
@@ -47,10 +108,8 @@ function loadSampleNetwork() {
 
     document.getElementById("network-status").textContent = "Ready";
 
-    updateAI(
-        "Your sample office network is ready.",
-        "You can add devices, connect them and test possible failures."
-    );
+    updateAI("Your sample office network is ready.",
+        "Use Premium to unlock rule-based assistant analysis and recommendations.");
 }
 
 
@@ -94,6 +153,7 @@ function updateSelectors() {
 
 function drawNetwork() {
     topology.innerHTML = "";
+    refreshWorkspace();
 
     const svgNS = "http://www.w3.org/2000/svg";
 
@@ -110,6 +170,7 @@ function drawNetwork() {
         line.setAttribute("x2", to.x);
         line.setAttribute("y2", to.y);
         line.setAttribute("class", "network-link");
+        line.dataset.from=link.from; line.dataset.to=link.to;
 
         topology.appendChild(line);
     });
@@ -134,6 +195,8 @@ function drawNetwork() {
                 lastSimulation.affected.some(d => d.id === device.id)
             ) {
                 group.classList.add("affected");
+            } else if ((lastSimulation.disconnected || []).some(d => d.id === device.id)) {
+                group.classList.add("disconnected");
             } else {
                 group.classList.add("unaffected");
             }
@@ -153,6 +216,15 @@ function drawNetwork() {
         group.appendChild(circle);
         group.appendChild(label);
 
+        group.addEventListener("pointerdown", event => {
+            if(event.button!==0) return;
+            event.preventDefault();
+            selectedDevice=device.id;
+            const point=svgPoint(event);
+            dragging={id:device.id, dx:device.x-point.x, dy:device.y-point.y, moved:false};
+            topology.setPointerCapture(event.pointerId);
+            topology.querySelectorAll(".network-node").forEach(n=>n.classList.toggle("selected",n.dataset.deviceId===device.id));
+        });
         group.addEventListener("click", () => {
             selectedDevice = device.id;
 
@@ -162,6 +234,7 @@ function drawNetwork() {
             drawNetwork();
         });
 
+        group.dataset.deviceId=device.id;
         topology.appendChild(group);
     });
 }
@@ -197,16 +270,15 @@ function addDevice() {
         y: 110 + Math.floor(index / 5) * 125
     };
 
+    snapshot();
     devices.push(newDevice);
 
     resetSimulationAfterEdit();
     updateDashboard();
     drawNetwork();
 
-    updateAI(
-        "A new " + type + " was added.",
-        "Connect this device to another device before testing failures."
-    );
+    if (currentPlan === "Premium") updateAI("A new " + type + " was added.",
+        "Connect this device to another device before testing failures.");
 }
 
 
@@ -236,16 +308,15 @@ function connectDevices() {
         return;
     }
 
+    snapshot();
     links.push({ from: from, to: to });
 
     resetSimulationAfterEdit();
     updateDashboard();
     drawNetwork();
 
-    updateAI(
-        "A new connection was added.",
-        "Your network topology has been updated. You can now test a device failure."
-    );
+    if (currentPlan === "Premium") updateAI("A new connection was added.",
+        "Your topology has been updated. Run a failure simulation to test its resilience.");
 }
 
 
@@ -263,6 +334,7 @@ function resetSimulationAfterEdit() {
 // FAILURE SIMULATION
 
 async function simulateFailure() {
+    if (!ensurePlan("Basic")) return;
     const failedId =
         document.getElementById("failure-device").value;
 
@@ -310,13 +382,19 @@ async function simulateFailure() {
 
         showDeviceList("affected-list", result.affected);
         showDeviceList("unaffected-list", result.unaffected);
+        showDeviceList("disconnected-list", result.disconnected || []);
+        document.getElementById("disconnected-count").textContent=(result.disconnected||[]).length;
 
         document.getElementById("simulation-notice").textContent =
             "This is a virtual simulation, not a live network test.";
 
         drawNetwork();
 
-        updateAI(result.explanation, result.recommendation);
+        if (currentPlan === "Premium") {
+            updateAI(result.explanation, result.recommendation);
+        } else {
+            updateAI("Premium Assistant is locked.", "Basic includes failure simulation. Upgrade to Premium for assistant insights and recommendations.");
+        }
 
     } catch (error) {
         console.error(error);
@@ -364,10 +442,8 @@ function restoreNetwork() {
     document.getElementById("network-status").textContent =
         "Ready";
 
-    updateAI(
-        "Network view restored.",
-        "You can run another failure simulation."
-    );
+    if (currentPlan === "Premium") updateAI("Network view restored.",
+        "You can run another failure simulation.");
 }
 
 
@@ -385,68 +461,23 @@ function clearSimulation() {
 
     document.getElementById("affected-list").innerHTML = "";
     document.getElementById("unaffected-list").innerHTML = "";
+    document.getElementById("disconnected-list").innerHTML = "";
+    document.getElementById("disconnected-count").textContent="0";
     document.getElementById("simulation-notice").textContent = "";
 }
 
 
 // RULE-BASED NETWORK ASSISTANT
 
-function analyzeNetwork() {
-    if (devices.length === 0) {
-        updateAI(
-            "No network devices found.",
-            "Add devices to begin network analysis."
-        );
-        return;
-    }
-
-    if (links.length === 0) {
-        updateAI(
-            "Your network has devices but no connections.",
-            "Connect the devices to create a network topology."
-        );
-        return;
-    }
-
-    const routers = devices.filter(d => d.type === "Router");
-
-    if (routers.length === 0) {
-        updateAI(
-            "No router was found in the network.",
-            "Consider adding a router as the main connection point."
-        );
-        return;
-    }
-
-    const connectedIds = new Set();
-
-    links.forEach(link => {
-        connectedIds.add(link.from);
-        connectedIds.add(link.to);
-    });
-
-    const isolated = devices.filter(
-        d => !connectedIds.has(d.id)
-    );
-
-    if (isolated.length > 0) {
-        updateAI(
-            "Some devices have no connections.",
-            "Check these devices: " +
-            isolated.map(d => d.name).join(", ") +
-            ". Connect them where needed."
-        );
-        return;
-    }
-
-    updateAI(
-        "Your network contains " +
-        devices.length + " devices and " +
-        links.length + " connections.",
-        "No isolated devices were found in this basic check. Run a failure simulation to test network resilience."
-    );
+async function analyzeNetwork() {
+    if(!ensurePlan("Premium")) return;
+    try {
+        const response=await fetch("/api/analyze",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({devices,links})});
+        const result=await response.json();
+        if(!response.ok) return alert(result.error||"Analysis failed.");
+        updateAI(result.summary,result.recommendation);
+    } catch(error){alert("Could not reach assistant service.");}
 }
-
 
 // UPDATE ASSISTANT TEXT
 
@@ -462,6 +493,7 @@ function updateAI(summary, recommendation) {
 // DOWNLOAD REPORT
 
 function downloadReport() {
+    if (!ensurePlan("Basic")) return;
     const report = {
         project: "NetTwin AI",
         reportDate: new Date().toLocaleString(),
@@ -598,6 +630,9 @@ async function confirmCheckout() {
         document.getElementById("checkout-message").textContent =
             result.message;
 
+        currentPlan=result.plan;
+        updatePlanLocks();
+        if(currentPlan !== "Premium") updateAI("Premium Assistant is locked.", "Select Premium to unlock rule-based network insights.");
         setTimeout(closeCheckout, 1200);
 
     } catch (error) {
@@ -655,3 +690,62 @@ document.getElementById("checkout-modal")
 // START APPLICATION
 
 loadSampleNetwork();
+
+// Interactive topology controls
+function updatePlanLocks(){
+    for(const [id,plan] of [["simulate-btn","Basic"],["download-btn","Basic"],["analyze-btn","Premium"]]){
+        const el=document.getElementById(id);
+        if(el) el.title=({Free:0,Basic:1,Premium:2}[currentPlan]<({Free:0,Basic:1,Premium:2}[plan])) ? plan+" plan required" : "Available";
+    }
+}
+topology.addEventListener("pointermove",event=>{
+    if(!dragging) return;
+    const d=devices.find(d=>d.id===dragging.id); if(!d) return;
+    const pt=svgPoint(event);
+    const nx=Math.max(35,Math.round(pt.x+dragging.dx));
+    const ny=Math.max(55,Math.round(pt.y+dragging.dy));
+    if(!dragging.moved && (Math.abs(nx-d.x)+Math.abs(ny-d.y)>3)){
+        snapshot(); dragging.moved=true;
+    }
+    d.x=nx; d.y=ny;
+    // Update existing elements instead of redrawing during drag.
+    const node=Array.from(topology.querySelectorAll(".network-node")).find(g=>g.dataset.deviceId===d.id);
+    if(node) node.setAttribute("transform",`translate(${d.x}, ${d.y})`);
+    topology.querySelectorAll(".network-link").forEach(line=>{
+        if(line.dataset.from===d.id){line.setAttribute("x1",d.x);line.setAttribute("y1",d.y)}
+        if(line.dataset.to===d.id){line.setAttribute("x2",d.x);line.setAttribute("y2",d.y)}
+    });
+});
+function finishDrag(){if(dragging){dragging=null;resetSimulationAfterEdit();drawNetwork();}}
+topology.addEventListener("pointerup",finishDrag);
+topology.addEventListener("pointercancel",finishDrag);
+for(const [id,fn] of [["rename-device",editSelected],["delete-device",deleteSelected],["disconnect-device",disconnectSelected],["disconnect-pair",disconnectPair],["undo-device",undoEdit],["redo-device",redoEdit]]){
+    document.getElementById(id).addEventListener("click",fn);
+}
+document.getElementById("save-network").addEventListener("click",async()=>{
+    try{
+        const response=await fetch("/api/network",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({devices,links})});
+        const data=await response.json(); alert(data.message||data.error||"Save failed");
+    }catch(e){alert("Could not save network.")}
+});
+function setZoom(value){zoom=Math.max(.5,Math.min(1.75,value));topology.style.transform=`scale(${zoom})`;topology.style.transformOrigin="top left";
+    // transform does not alter scrollable layout; wrapper dimensions are updated instead.
+    document.getElementById("topology-canvas").style.width=(parseFloat(topology.style.width)*zoom)+"px";
+    document.getElementById("topology-canvas").style.height=(parseFloat(topology.style.height)*zoom)+"px";
+    document.getElementById("zoom-level").textContent=Math.round(zoom*100)+"%";
+}
+document.getElementById("zoom-in").addEventListener("click",()=>setZoom(zoom+.15));
+document.getElementById("zoom-out").addEventListener("click",()=>setZoom(zoom-.15));
+document.getElementById("zoom-reset").addEventListener("click",()=>setZoom(1));
+async function loadSavedNetwork(){
+    try{
+        const response=await fetch("/api/network");if(!response.ok)return;
+        const data=await response.json();
+        if(data.network && Array.isArray(data.network.devices)&&Array.isArray(data.network.links)){
+            devices=data.network.devices;links=data.network.links;history=[];future=[];
+            selectedDevice=null;lastSimulation=null;updateDashboard();drawNetwork();clearSimulation();
+        }
+    }catch(e){console.warn("Saved topology not loaded",e)}
+}
+updatePlanLocks();
+loadSavedNetwork();
